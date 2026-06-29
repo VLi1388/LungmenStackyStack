@@ -1,0 +1,27 @@
+{
+  "name": "lungmen-stacky-stack-2d",
+  "version": "0.0.1",
+  "description": "A Tower Bloxx-like block stacking game with a top-down 2.5D look, built with Phaser 3",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "phaser",
+    "game",
+    "tower-bloxx",
+    "stacking",
+    "isometric",
+    "2.5d"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  },
+  "dependencies": {
+    "phaser": "^3.80.1"
+  }
+}
