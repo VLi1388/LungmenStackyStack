@@ -7,11 +7,16 @@ import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 
 import { Config } from "../config";
 
+/** Generates a pleasant random block color. */
+export function randomBlockColor(): Color3 {
+  return Color3.FromHSV(Math.random() * 360, 0.55, 0.9);
+}
+
 /**
  * Creates a single stackable block mesh.
  * Physics bodies are attached later when a block is dropped.
  */
-export function createBlock(scene: Scene, position: Vector3): Mesh {
+export function createBlock(scene: Scene, position: Vector3, color: Color3): Mesh {
   const block = CreateBox(
     "block",
     {
@@ -24,7 +29,7 @@ export function createBlock(scene: Scene, position: Vector3): Mesh {
   block.position.copyFrom(position);
 
   const mat = new StandardMaterial("blockMat", scene);
-  mat.diffuseColor = Color3.FromHSV(Math.random() * 360, 0.55, 0.9);
+  mat.diffuseColor = color;
   mat.specularColor = new Color3(0.1, 0.1, 0.1);
   block.material = mat;
 

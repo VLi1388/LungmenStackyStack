@@ -8,6 +8,8 @@ import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
 import { CreateGround } from "@babylonjs/core/Meshes/Builders/groundBuilder";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { HavokPlugin } from "@babylonjs/core/Physics/v2/Plugins/havokPlugin";
+import { PhysicsAggregate } from "@babylonjs/core/Physics/v2/physicsAggregate";
+import { PhysicsShapeType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import HavokPhysics from "@babylonjs/havok";
 
 // Side-effect imports required for the features used above.
@@ -15,12 +17,22 @@ import "@babylonjs/core/Physics/v2/physicsEngineComponent";
 import "@babylonjs/core/Materials/standardMaterial";
 
 import { Config } from "../config";
-import { Crane } from "../entities/Crane";
+import { Crane, type DroppedBlock } from "../entities/Crane";
 import { Tower } from "../entities/Tower";
+import { Hud } from "../ui/Hud";
+
+type GameState = "ready" | "dropping" | "gameover";
+
+/** A block currently falling and being watched until it settles or misses. */
+interface ActiveDrop extends DroppedBlock {
+  framesStill: number;
+  elapsed: number;
+  targetRestY: number;
+}
 
 /**
- * The main playable scene: sets up camera, lighting, ground,
- * physics, and the core gameplay entities (crane + tower).
+ * The main playable scene: sets up camera, lighting, ground, physics,
+ * and drives the core gameplay loop (drop → settle → score / game over).
  */
 export class GameScene {
   private readonly engine: Engine;
@@ -30,6 +42,12 @@ export class GameScene {
   private camera!: ArcRotateCamera;
   private crane!: Crane;
   private tower!: Tower;
+  private hud!: Hud;
+
+  private state: GameState = "ready";
+  private score = 0;
+  private active?: ActiveDrop;
+  private readonly droppedBlocks: DroppedBlock[] = [];
 
   constructor(engine: Engine, canvas: HTMLCanvasElement) {
     this.engine = engine;
@@ -45,8 +63,10 @@ export class GameScene {
     this.createLighting();
     this.createGround();
 
+    this.hud = new Hud();
     this.tower = new Tower();
     this.crane = new Crane(this.scene, this.tower);
+    this.spawnNext();
 
     this.registerInput();
     this.registerUpdateLoop();
@@ -91,25 +111,132 @@ export class GameScene {
     mat.specularColor = Color3.Black();
     ground.material = mat;
 
-    // TODO: add a static physics body to the ground for the first block to land on.
+    // Static collider (mass 0) so the first block has something to land on.
+    new PhysicsAggregate(ground, PhysicsShapeType.MESH, { mass: 0 }, this.scene);
   }
 
   private registerInput(): void {
-    // Drop the swinging block on click / tap or spacebar.
-    this.scene.onPointerDown = () => this.crane.dropBlock();
+    this.scene.onPointerDown = () => this.handleAction();
 
     window.addEventListener("keydown", (e) => {
       if (e.code === "Space") {
         e.preventDefault();
-        this.crane.dropBlock();
+        this.handleAction();
       }
     });
+  }
+
+  /** Single "action" input: drop a block, or restart after game over. */
+  private handleAction(): void {
+    if (this.state === "gameover") {
+      this.restart();
+      return;
+    }
+
+    if (this.state === "ready" && this.crane.hasBlock) {
+      this.dropBlock();
+    }
+  }
+
+  private dropBlock(): void {
+    const dropped = this.crane.dropBlock();
+    if (!dropped) {
+      return;
+    }
+
+    this.droppedBlocks.push(dropped);
+    this.active = {
+      ...dropped,
+      framesStill: 0,
+      elapsed: 0,
+      targetRestY: this.tower.nextRestY,
+    };
+    this.state = "dropping";
   }
 
   private registerUpdateLoop(): void {
     this.scene.onBeforeRenderObservable.add(() => {
       const dt = this.engine.getDeltaTime() / 1000;
       this.crane.update(dt);
+      this.updateCamera();
+
+      if (this.state === "dropping" && this.active) {
+        this.updateActiveDrop(dt);
+      }
     });
+  }
+
+  private updateActiveDrop(dt: number): void {
+    const drop = this.active!;
+    drop.elapsed += dt;
+
+    const body = drop.aggregate.body;
+    const linSpeed = body.getLinearVelocity().length();
+    const angSpeed = body.getAngularVelocity().length();
+
+    const isStill =
+      linSpeed < Config.rules.settleLinearSpeed && angSpeed < Config.rules.settleAngularSpeed;
+    drop.framesStill = isStill ? drop.framesStill + 1 : 0;
+
+    const settled = drop.framesStill >= Config.rules.settleFrames;
+    const timedOut = drop.elapsed >= Config.rules.settleTimeout;
+
+    if (settled || timedOut) {
+      this.resolveDrop(drop);
+    }
+  }
+
+  private resolveDrop(drop: ActiveDrop): void {
+    this.active = undefined;
+
+    const horizontalOffset = Math.abs(drop.mesh.position.x - this.tower.centerX);
+    const fellBelow = drop.mesh.position.y < drop.targetRestY - Config.rules.missFallBelow;
+    const missed = horizontalOffset > Config.rules.maxOffsetFromCenter || fellBelow;
+
+    if (missed) {
+      this.endGame();
+      return;
+    }
+
+    this.tower.addBlock(drop.mesh);
+    this.score += 1;
+    this.hud.setScore(this.score);
+
+    this.spawnNext();
+    this.state = "ready";
+  }
+
+  private endGame(): void {
+    this.state = "gameover";
+    this.hud.showGameOver(this.score);
+  }
+
+  private restart(): void {
+    for (const block of this.droppedBlocks) {
+      block.aggregate.dispose();
+      block.mesh.dispose();
+    }
+    this.droppedBlocks.length = 0;
+
+    this.tower.reset();
+    this.active = undefined;
+    this.score = 0;
+    this.hud.setScore(0);
+    this.hud.hideGameOver();
+
+    this.spawnNext();
+    this.state = "ready";
+  }
+
+  /** Load the next block onto the crane and refresh the HUD preview. */
+  private spawnNext(): void {
+    this.crane.spawnNextBlock();
+    this.hud.setNextColor(this.crane.nextColor.toHexString());
+  }
+
+  private updateCamera(): void {
+    // Smoothly raise the camera target so the tower top stays in frame.
+    const desiredY = this.tower.surfaceY + 4;
+    this.camera.target.y += (desiredY - this.camera.target.y) * Config.camera.followLerp;
   }
 }
